@@ -1,0 +1,129 @@
+url: https://kecognac.github.io/flowR/   # update when the repository is renamed
+template:
+  bootstrap: 5
+
+navbar:
+  structure:
+    left: [intro, reference, articles]
+    right: [search, github]
+
+articles:
+- title: Guides
+  navbar: ~
+  contents:
+  - getting-started
+  - your-flow-data
+  - custom-models
+
+reference:
+- title: Basins
+  desc: A watershed with its flow, climate forcing and attributes.
+  contents:
+  - wsva_basin
+  - wsva_basin_usgs
+  - example_basin
+  - add_forcing
+  - add_basin_attributes
+  - check_basin
+  - prepare_basin
+  - read_basin_inputs
+  - basin_id
+- title: Flow data
+  contents:
+  - flow_usgs
+  - flow_cdss
+  - flow_from_df
+  - flow_from_csv
+  - flow_to_mm
+  - flow_meta
+  - get_usgs_flow
+  - list_usgs_gauges
+  - gauge_info
+  - get_gagesii_points
+- title: Watersheds
+  contents:
+  - delineate_basin
+  - get_gauge_basin
+- title: Climate forcing and PET
+  desc: The forcing contract and the PET methods; GridMET access.
+  contents:
+  - prepare_forcing
+  - forcing_required_vars
+  - pet_penman_monteith
+  - pet_ref_kc
+  - kc_seasonal
+  - basin_kc
+  - read_kc_table
+  - pet_oudin
+  - pet_hamon
+  - heat_load_index
+  - get_gridmet_cells
+  - gridmet_basin_mean
+  - download_gridmet_conus
+  - extract_gridmet_bulk
+  - read_gridmet_bulk
+- title: Basin attributes
+  contents:
+  - get_basin_static
+  - basin_dem
+  - basin_terrain
+  - get_basin_hypsometry
+  - basin_soil_storage
+  - basin_jennings
+  - get_basin_landcover
+- title: Fitting and comparing models
+  contents:
+  - fit_models
+  - summary.wsva_fit
+  - plot.wsva_fit
+  - predict.wsva_fit
+  - coef.wsva_fit
+- title: Model specs
+  contents:
+  - wsva_models
+  - wsva_model
+  - register_model
+- title: Process models
+  desc: The models behind the specs, usable directly.
+  contents:
+  - wbm_run
+  - wbm_default_params
+  - wbm_ihacres_model
+  - wbm_ihacres_bounds
+  - route_ihacres
+  - route_ihacres_snow
+  - gr_setup
+  - gr_run
+  - gr_bounds
+  - gr_models
+  - hbv_setup
+  - hbv_run
+  - hbv_bounds
+- title: Calibration and evaluation
+  contents:
+  - calibrate_model
+  - cross_validate_model
+  - param_bounds
+  - make_blocked_folds
+  - make_climate_contrast_folds
+  - make_period_split
+  - eval_metrics
+  - kge
+  - nse
+  - log_nse
+  - pbias
+  - rsr
+  - r2
+  - error_metrics
+  - benchmark_doy_climatology
+  - baseflow_eckhardt
+- title: Utilities
+  contents:
+  - wsva_path
+  - wsva_default_period
+  - calc_water_year
+  - complete_daily
+  - cfs_to_mm_day
+  - mm_day_to_cms
+  - usgs_id
+  - usgs_site_no
