@@ -1,0 +1,288 @@
+# Package index
+
+## Basins
+
+A watershed with its flow, climate forcing and attributes.
+
+- [`wsva_basin()`](https://kecognac.github.io/flowR/reference/wsva_basin.md)
+  : Build a basin from flow data and a watershed (given or delineated)
+
+- [`wsva_basin_usgs()`](https://kecognac.github.io/flowR/reference/wsva_basin_usgs.md)
+  : Basin for a USGS gauge: USGS flow and the NLDI basin for the site
+
+- [`example_basin()`](https://kecognac.github.io/flowR/reference/example_basin.md)
+  : Example basin: Clear Creek above Clear Creek Reservoir, Colorado
+
+- [`add_forcing()`](https://kecognac.github.io/flowR/reference/add_forcing.md)
+  : Add daily basin-mean climate forcing
+
+- [`add_basin_attributes()`](https://kecognac.github.io/flowR/reference/add_basin_attributes.md)
+  : Add basin attributes from public datasets
+
+- [`check_basin()`](https://kecognac.github.io/flowR/reference/check_basin.md)
+  : Checks a basin should pass before models are fit
+
+- [`prepare_basin()`](https://kecognac.github.io/flowR/reference/prepare_basin.md)
+  : Build the processed model inputs for one gauge
+
+- [`read_basin_inputs()`](https://kecognac.github.io/flowR/reference/read_basin_inputs.md)
+  : Read a prepared basin's daily table, static attributes and
+  hypsometry
+
+- [`basin_id()`](https://kecognac.github.io/flowR/reference/basin_id.md)
+  :
+
+  Identifier of a basin polygon (`id`, else `site_no`)
+
+## Flow data
+
+- [`flow_usgs()`](https://kecognac.github.io/flowR/reference/flow_usgs.md)
+  : Daily flow from the USGS Water Data APIs
+- [`flow_cdss()`](https://kecognac.github.io/flowR/reference/flow_cdss.md)
+  : Daily flow from Colorado's Decision Support Systems (CDSS / DWR)
+- [`flow_from_df()`](https://kecognac.github.io/flowR/reference/flow_from_df.md)
+  : Standard flow table from a user data frame
+- [`flow_from_csv()`](https://kecognac.github.io/flowR/reference/flow_from_csv.md)
+  : Standard flow table from a csv file
+- [`flow_to_mm()`](https://kecognac.github.io/flowR/reference/flow_to_mm.md)
+  : Add basin-depth flow (mm/day) to a flow table
+- [`flow_meta()`](https://kecognac.github.io/flowR/reference/flow_meta.md)
+  : Metadata of a standard flow table
+- [`get_usgs_flow()`](https://kecognac.github.io/flowR/reference/get_usgs_flow.md)
+  : Daily mean discharge for one USGS gauge
+- [`list_usgs_gauges()`](https://kecognac.github.io/flowR/reference/list_usgs_gauges.md)
+  : List USGS gauges with daily discharge records
+- [`gauge_info()`](https://kecognac.github.io/flowR/reference/gauge_info.md)
+  : What is known about a USGS gauge: name, GAGES-II screening,
+  reference area
+- [`get_gagesii_points()`](https://kecognac.github.io/flowR/reference/get_gagesii_points.md)
+  : GAGES-II gauge points with classification attributes
+
+## Watersheds
+
+- [`delineate_basin()`](https://kecognac.github.io/flowR/reference/delineate_basin.md)
+  : Delineate the watershed upstream of an outlet point
+- [`get_gauge_basin()`](https://kecognac.github.io/flowR/reference/get_gauge_basin.md)
+  : Upstream basin for a USGS gauge from the NLDI
+
+## Climate forcing and PET
+
+The forcing contract and the PET methods; GridMET access.
+
+- [`prepare_forcing()`](https://kecognac.github.io/flowR/reference/prepare_forcing.md)
+  : Check a forcing table against the contract and add derived variables
+- [`forcing_required_vars()`](https://kecognac.github.io/flowR/reference/forcing_required_vars.md)
+  : Columns every forcing table must have (the forcing contract)
+- [`pet_penman_monteith()`](https://kecognac.github.io/flowR/reference/pet_penman_monteith.md)
+  : FAO-56 Penman-Monteith grass reference ET
+- [`pet_ref_kc()`](https://kecognac.github.io/flowR/reference/pet_ref_kc.md)
+  : Daily vegetation PET (mm) = FAO-56 Penman-Monteith ETo x seasonal Kc
+- [`kc_seasonal()`](https://kecognac.github.io/flowR/reference/kc_seasonal.md)
+  : Daily Kc from a temperature phenology index
+- [`basin_kc()`](https://kecognac.github.io/flowR/reference/basin_kc.md)
+  : Area-weighted basin dormant and growing-season Kc
+- [`read_kc_table()`](https://kecognac.github.io/flowR/reference/read_kc_table.md)
+  : Kc lookup table by NLCD class
+- [`pet_oudin()`](https://kecognac.github.io/flowR/reference/pet_oudin.md)
+  : Oudin et al. (2005) temperature/radiation PET
+- [`pet_hamon()`](https://kecognac.github.io/flowR/reference/pet_hamon.md)
+  : Hamon (1963) PET, in the form given by Lu et al. (2005)
+- [`heat_load_index()`](https://kecognac.github.io/flowR/reference/heat_load_index.md)
+  : Heat load index (McCune & Keon 2002, as used by Lutz et al. 2010)
+- [`get_gridmet_cells()`](https://kecognac.github.io/flowR/reference/get_gridmet_cells.md)
+  : Cell-level GridMET for a basin, cached in multi-year chunks
+- [`gridmet_basin_mean()`](https://kecognac.github.io/flowR/reference/gridmet_basin_mean.md)
+  : Area-weighted basin-mean daily GridMET forcing
+- [`download_gridmet_conus()`](https://kecognac.github.io/flowR/reference/download_gridmet_conus.md)
+  : Download national GridMET files
+- [`extract_gridmet_bulk()`](https://kecognac.github.io/flowR/reference/extract_gridmet_bulk.md)
+  : Extract cell-level GridMET for many basins from the national files
+- [`read_gridmet_bulk()`](https://kecognac.github.io/flowR/reference/read_gridmet_bulk.md)
+  : Read bulk-extracted cell-level GridMET for one basin
+
+## Basin attributes
+
+- [`get_basin_static()`](https://kecognac.github.io/flowR/reference/get_basin_static.md)
+  :
+
+  Basin-mean static parameters for
+  [`wbm_run()`](https://kecognac.github.io/flowR/reference/wbm_run.md)
+  from public datasets
+
+- [`basin_dem()`](https://kecognac.github.io/flowR/reference/basin_dem.md)
+  : Digital elevation model for a basin (cached GeoTIFF, CONUS Albers)
+
+- [`basin_terrain()`](https://kecognac.github.io/flowR/reference/basin_terrain.md)
+  : Basin-mean elevation, slope and (circular-mean) aspect
+
+- [`get_basin_hypsometry()`](https://kecognac.github.io/flowR/reference/get_basin_hypsometry.md)
+  : Basin hypsometry: 101 area-weighted elevation quantiles (min, 1%,
+  ..., max)
+
+- [`basin_soil_storage()`](https://kecognac.github.io/flowR/reference/basin_soil_storage.md)
+  : Soil available water storage from gNATSGO (SSURGO + STATSGO2)
+
+- [`basin_jennings()`](https://kecognac.github.io/flowR/reference/basin_jennings.md)
+  : Basin-mean rain/snow temperature threshold (Jennings et al. 2018)
+
+- [`get_basin_landcover()`](https://kecognac.github.io/flowR/reference/get_basin_landcover.md)
+  : NLCD land-cover percentages over a basin polygon
+
+## Fitting and comparing models
+
+- [`fit_models()`](https://kecognac.github.io/flowR/reference/fit_models.md)
+  : Calibrate and evaluate several process models on one basin
+
+- [`summary(`*`<wsva_fit>`*`)`](https://kecognac.github.io/flowR/reference/summary.wsva_fit.md)
+  :
+
+  Skill summary of a `wsva_fit`
+
+- [`plot(`*`<wsva_fit>`*`)`](https://kecognac.github.io/flowR/reference/plot.wsva_fit.md)
+  :
+
+  Plot a `wsva_fit`
+
+- [`predict(`*`<wsva_fit>`*`)`](https://kecognac.github.io/flowR/reference/predict.wsva_fit.md)
+  :
+
+  Simulate flow from a `wsva_fit`
+
+- [`coef(`*`<wsva_fit>`*`)`](https://kecognac.github.io/flowR/reference/coef.wsva_fit.md)
+  :
+
+  Calibrated parameters of a `wsva_fit`
+
+## Model specs
+
+- [`wsva_models()`](https://kecognac.github.io/flowR/reference/wsva_models.md)
+  : Available process models (built-in and registered)
+
+- [`wsva_model()`](https://kecognac.github.io/flowR/reference/wsva_model.md)
+  :
+
+  Define a process model for
+  [`fit_models()`](https://kecognac.github.io/flowR/reference/fit_models.md)
+
+- [`register_model()`](https://kecognac.github.io/flowR/reference/register_model.md)
+  :
+
+  Register a user-defined model so
+  [`fit_models()`](https://kecognac.github.io/flowR/reference/fit_models.md)
+  can use it
+
+## Process models
+
+The models behind the specs, usable directly.
+
+- [`wbm_run()`](https://kecognac.github.io/flowR/reference/wbm_run.md) :
+  Run the water balance model
+- [`wbm_default_params()`](https://kecognac.github.io/flowR/reference/wbm_default_params.md)
+  : Default WBM parameters
+- [`wbm_ihacres_model()`](https://kecognac.github.io/flowR/reference/wbm_ihacres_model.md)
+  : WBM (Penman-Monteith x Kc) + IHACRES routing as a calibration
+  closure
+- [`wbm_ihacres_bounds()`](https://kecognac.github.io/flowR/reference/wbm_ihacres_bounds.md)
+  : Calibration bounds for WBM + IHACRES routing (the ranges notebook 03
+  uses)
+- [`route_ihacres()`](https://kecognac.github.io/flowR/reference/route_ihacres.md)
+  : Route runoff through quick and slow linear stores with optional
+  losses
+- [`route_ihacres_snow()`](https://kecognac.github.io/flowR/reference/route_ihacres_snow.md)
+  : Route rain- and melt-derived runoff through separate stores
+- [`gr_setup()`](https://kecognac.github.io/flowR/reference/gr_setup.md)
+  : Build the airGR inputs and run options once per basin
+- [`gr_run()`](https://kecognac.github.io/flowR/reference/gr_run.md) :
+  Run a CemaNeige-GR model and return simulated flow (mm/day)
+- [`gr_bounds()`](https://kecognac.github.io/flowR/reference/gr_bounds.md)
+  : Default calibration bounds for CemaNeige-GR4J/5J/6J
+- [`gr_models()`](https://kecognac.github.io/flowR/reference/gr_models.md)
+  : GR models available through airGR in this package
+- [`hbv_setup()`](https://kecognac.github.io/flowR/reference/hbv_setup.md)
+  : Build HBV zone forcing once per basin
+- [`hbv_run()`](https://kecognac.github.io/flowR/reference/hbv_run.md) :
+  Run TUWmodel and return simulated flow (mm/day)
+- [`hbv_bounds()`](https://kecognac.github.io/flowR/reference/hbv_bounds.md)
+  : Default calibration bounds for TUWmodel (ranges from the TUWmodel
+  docs / Parajka et al. 2007)
+
+## Calibration and evaluation
+
+- [`calibrate_model()`](https://kecognac.github.io/flowR/reference/calibrate_model.md)
+  : Calibrate a model with DDS
+
+- [`cross_validate_model()`](https://kecognac.github.io/flowR/reference/cross_validate_model.md)
+  : Blocked cross-validation of a calibrated model
+
+- [`param_bounds()`](https://kecognac.github.io/flowR/reference/param_bounds.md)
+  : Parameter bounds table
+
+- [`make_blocked_folds()`](https://kecognac.github.io/flowR/reference/make_blocked_folds.md)
+  : Blocked k-fold cross-validation on contiguous water-year blocks
+
+- [`make_climate_contrast_folds()`](https://kecognac.github.io/flowR/reference/make_climate_contrast_folds.md)
+  : Differential split-sample test: calibrate in one climate, test in
+  another
+
+- [`make_period_split()`](https://kecognac.github.io/flowR/reference/make_period_split.md)
+  : Fixed warm-up / calibration / validation / test periods by water
+  year
+
+- [`eval_metrics()`](https://kecognac.github.io/flowR/reference/eval_metrics.md)
+  : All metrics in one row, for comparing models on a common evaluation
+  set
+
+- [`kge()`](https://kecognac.github.io/flowR/reference/kge.md) :
+
+  Kling-Gupta efficiency (Gupta et al. 2009); `components = TRUE`
+  returns r, alpha, beta
+
+- [`nse()`](https://kecognac.github.io/flowR/reference/nse.md) :
+  Nash-Sutcliffe efficiency (1 = perfect, 0 = as good as the mean)
+
+- [`log_nse()`](https://kecognac.github.io/flowR/reference/log_nse.md) :
+
+  NSE of log flows (emphasizes low flows); `eps` avoids log(0)
+
+- [`pbias()`](https://kecognac.github.io/flowR/reference/pbias.md) :
+  Percent bias; positive = model underestimates (Moriasi sign
+  convention)
+
+- [`rsr()`](https://kecognac.github.io/flowR/reference/rsr.md) : RMSE /
+  standard deviation of observations
+
+- [`r2()`](https://kecognac.github.io/flowR/reference/r2.md) :
+  Coefficient of determination (squared Pearson r)
+
+- [`rmse()`](https://kecognac.github.io/flowR/reference/error_metrics.md)
+  [`mae()`](https://kecognac.github.io/flowR/reference/error_metrics.md)
+  [`sse()`](https://kecognac.github.io/flowR/reference/error_metrics.md)
+  : Error metrics: root mean square error, mean absolute error, sum of
+  squared errors
+
+- [`benchmark_doy_climatology()`](https://kecognac.github.io/flowR/reference/benchmark_doy_climatology.md)
+  : Day-of-year mean flow, estimated only from training days
+
+- [`baseflow_eckhardt()`](https://kecognac.github.io/flowR/reference/baseflow_eckhardt.md)
+  : Eckhardt (2005) two-parameter recursive digital filter
+
+## Utilities
+
+- [`wsva_path()`](https://kecognac.github.io/flowR/reference/wsva_path.md)
+  : Path inside the WSVAflowR data directory
+- [`wsva_default_period()`](https://kecognac.github.io/flowR/reference/wsva_default_period.md)
+  : Default study period: WY1981-WY2024 (GridMET starts 1979; WY1981 is
+  warm-up)
+- [`calc_water_year()`](https://kecognac.github.io/flowR/reference/calc_water_year.md)
+  : Water year for a vector of dates
+- [`complete_daily()`](https://kecognac.github.io/flowR/reference/complete_daily.md)
+  : Pad a daily data frame so every date between start and end has a row
+- [`cfs_to_mm_day()`](https://kecognac.github.io/flowR/reference/cfs_to_mm_day.md)
+  : Discharge (ft3/s) to basin-average depth (mm/day)
+- [`mm_day_to_cms()`](https://kecognac.github.io/flowR/reference/mm_day_to_cms.md)
+  : Basin-average depth (mm/day) to discharge (m3/s)
+- [`usgs_id()`](https://kecognac.github.io/flowR/reference/usgs_id.md) :
+  Convert USGS ids to the "USGS-########" form used by the Water Data
+  APIs
+- [`usgs_site_no()`](https://kecognac.github.io/flowR/reference/usgs_site_no.md)
+  : Strip the "USGS-" prefix

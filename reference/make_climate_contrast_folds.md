@@ -1,0 +1,48 @@
+# Differential split-sample test: calibrate in one climate, test in another
+
+Klemes (1986, Hydrol. Sci. J. 31:13) proposed calibrating on
+climatically contrasting periods to test whether a model transfers to a
+changed climate – the closest historical check on using a model with
+climate projections. Water years after the warm-up are ranked by annual
+precipitation, annual mean temperature, and time. Each contrast trains
+on one extreme fraction of years and tests on the opposite extreme: 1
+wet -\> dry, 2 dry -\> wet, 3 cool -\> warm, 4 warm -\> cool, 5 early
+-\> late (calibrate on the first years, test on the most recent). Years
+in the middle are "unused". Process models still run the whole record;
+only scoring is restricted.
+
+## Usage
+
+``` r
+make_climate_contrast_folds(
+  daily,
+  frac = 1/3,
+  warmup_years = 1,
+  min_obs_frac = 0.8
+)
+```
+
+## Arguments
+
+- daily:
+
+  Daily tibble with date, prcp_mm, tmean_c (and q_mm if `min_obs_frac`
+  \> 0).
+
+- frac:
+
+  Fraction of scoreable water years in each extreme group.
+
+- warmup_years:
+
+  Leading water years never scored.
+
+- min_obs_frac:
+
+  Water years with less than this fraction of observed flow days are not
+  ranked or scored.
+
+## Value
+
+Long tibble: fold, contrast, date, wy, role ("train", "test", "warmup",
+"unused"), in the same layout as make_blocked_folds().
