@@ -1,0 +1,62 @@
+Package: WSVAflowR
+Title: Multi-Model Streamflow Simulation and Climate-Change Projection for Gauged Basins
+Version: 0.0.0.9000
+Authors@R:
+    person("Kristen", "Cognac", email = "kristencognac@gmail.com", role = c("aut", "cre"))
+Description: Builds model inputs for a stream gauge (watershed, daily flow,
+    climate forcing, basin attributes), calibrates and cross-validates several
+    lumped process models (a Thornthwaite-Mather water balance with IHACRES
+    routing, CemaNeige-GR4J/GR5J/GR6J, and HBV) on the same forcing and the
+    same water-year folds, tests their transfer to contrasting climates with a
+    differential split-sample test, and is designed to drive the calibrated
+    models with downscaled climate projections. Potential evapotranspiration
+    is always computed from the meteorological variables (FAO-56
+    Penman-Monteith with land-cover crop coefficients) so historical and
+    projected climate use one method.
+License: GPL (>= 3)
+URL: https://github.com/KECognac/flowR, https://kecognac.github.io/flowR/
+BugReports: https://github.com/KECognac/flowR/issues
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.4)
+Imports:
+    arrow,
+    dplyr,
+    exactextractr,
+    magrittr,
+    parallel,
+    purrr,
+    readr,
+    rlang,
+    sf,
+    stats,
+    terra,
+    tibble,
+    tidyr,
+    tools,
+    utils
+Suggests:
+    airGR,
+    cdssr,
+    climateR,
+    curl,
+    dataRetrieval (>= 2.7.18),
+    elevatr,
+    FedData,
+    future.apply,
+    ggplot2,
+    here,
+    jsonlite,
+    knitr,
+    nhdplusTools,
+    patchwork,
+    rmarkdown,
+    soilDB,
+    testthat (>= 3.0.0),
+    TUWmodel
+Remotes:
+    mikejohnson51/climateR
+Config/testthat/edition: 3
+VignetteBuilder: knitr

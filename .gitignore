@@ -48,3 +48,11 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+.positai
+
+# macOS
+.DS_Store
+
+# flowR local data (downloads, caches, model outputs) - never committed
+data/
+archive/

@@ -1,0 +1,15 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^data$
+^scripts$
+^archive$
+^config$
+^dev$
+^docs$
+^README\.Rmd$
+^LICENSE\.md$
+^\.DS_Store$
+^data-raw$
+^_pkgdown\.yml$
+^pkgdown$
+^\.github$
