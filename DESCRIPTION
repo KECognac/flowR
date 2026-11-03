@@ -57,6 +57,7 @@ Suggests:
     testthat (>= 3.0.0),
     TUWmodel
 Remotes:
+    anguswg-ucsb/cdssr,
     mikejohnson51/climateR
 Config/testthat/edition: 3
 VignetteBuilder: knitr
