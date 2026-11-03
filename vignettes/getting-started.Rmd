@@ -1,0 +1,165 @@
+---
+title: "Getting started: five models at one gauge"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started: five models at one gauge}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7.5, fig.height = 4.5, dpi = 96)
+```
+
+WSVAflowR calibrates several streamflow models on the same gauge, with the
+same climate forcing and the same tests, so you can compare them fairly and
+then drive all of them with a different climate. This vignette runs the
+whole workflow on a basin that ships with the package, so nothing is
+downloaded.
+
+```{r setup}
+library(WSVAflowR)
+options(wsva.data_dir = file.path(tempdir(), "wsva"))   # where caches go (default: a per-user cache folder)
+```
+
+## A basin
+
+A `wsva_basin` holds a watershed, its daily flow, climate forcing and basin
+attributes. `example_basin()` is Clear Creek above Clear Creek Reservoir in
+Colorado: a 174 km² snowmelt basin whose gauge is operated by the Colorado
+Division of Water Resources (CDSS station `CCACCRCO`).
+
+```{r basin}
+b <- example_basin()
+b
+```
+
+For your own gauge, the same object comes from a few calls (they need
+network access; see `vignette("your-flow-data")`):
+
+```{r, eval = FALSE}
+b <- wsva_basin_usgs("01154000")            # a USGS gauge, or
+b <- wsva_basin(flow_cdss("CCACCRCO"))      # a Colorado DWR gauge, or
+b <- wsva_basin(flow_from_csv("q.csv", q_col = "Q", lon = -105.3, lat = 40.0))
+b <- add_forcing(b)                         # GridMET basin-mean climate
+b <- add_basin_attributes(b)                # terrain, soils, rain/snow threshold, land cover
+```
+
+Before fitting, `check_basin()` looks for problems that would make results
+misleading: too short a record, a watershed that disagrees with the
+published drainage area, a runoff ratio that suggests imported water or bad
+precipitation, and flow that may be affected by people.
+
+```{r checks}
+check_basin(b)
+```
+
+## Fit the models
+
+`fit_models()` calibrates each model with DDS on KGE and evaluates it three
+ways:
+
+* **Blocked cross-validation.** The record is cut into 5 blocks of whole
+  water years; each block is predicted by a model calibrated on the
+  others. This gives an honest skill score and a continuous out-of-sample
+  series.
+* **Climate-contrast test.** Calibrate on the wettest (or driest, coolest,
+  warmest, earliest) third of the years and test on the opposite third: a
+  check on how a model transfers to a different climate.
+* **Full-record calibration.** One parameter set fit on every year, used
+  by `predict()` to run the model with new forcing.
+
+The default budget is 1,000 model runs per calibration. This vignette uses
+100 and three of the five models to stay quick; results are cached, so
+re-running a fit only recomputes what changed.
+
+```{r fit}
+fits <- fit_models(b, models = c("wbm", "gr4j", "hbv"), n_evals = 100)
+fits
+```
+
+## Skill
+
+```{r summary}
+s <- summary(fits)
+s
+```
+
+`kge`, `nse` and `log_nse` are medians over the five held-out blocks
+(`log_nse` weights low flows); `pbias` is the percent bias (positive means
+the model under-predicts). The **model mean** averages the models' daily
+flows and is often better than any one of them. The **DOY climatology** is
+a benchmark that just predicts each calendar day's average flow: a model
+has to beat it to be adding anything. In a regular snowmelt basin like this
+one it is a strong benchmark for low flows (compare `log_nse`), even though
+the models beat it easily on overall KGE.
+
+```{r skill-plot, fig.height = 3, fig.alt = "Test-fold KGE, NSE and log-NSE for each model, with the median marked"}
+plot(fits, type = "skill")
+```
+
+```{r overview, fig.height = 9, fig.alt = "Observed and out-of-sample simulated flow for each model: recent hydrographs on linear and log scales, flow duration curves, mean monthly flow and annual flow"}
+plot(fits)
+```
+
+## Transfer to a different climate
+
+The second table in the summary, and the plot below, come from the
+climate-contrast test. Models that keep their skill and, above all, their
+water balance (small bias) when calibrated in one climate and tested in
+another are the safer choice for projections.
+
+```{r contrast, fig.height = 3.5, fig.alt = "KGE and percent bias for each model when calibrated in one climate extreme and tested in the opposite"}
+plot(fits, type = "contrast")
+```
+
+## Run the models with a different climate
+
+`predict()` with new forcing runs every model with its full-record
+parameters. PET is recomputed from the new temperature, humidity,
+radiation and wind with the same Penman-Monteith method used in
+calibration. A simple sensitivity test: 2 °C warmer and 10% less
+precipitation than the historical record.
+
+```{r predict}
+hist <- b$forcing
+warm_dry <- transform(hist, tmin_c = tmin_c + 2, tmax_c = tmax_c + 2, tmean_c = tmean_c + 2,
+                      prcp_mm = prcp_mm * 0.9)
+q0 <- predict(fits, forcing = hist)
+q1 <- predict(fits, forcing = warm_dry)
+
+models <- c("wbm", "gr4j", "hbv", "mean")
+change <- sapply(models, function(m) 100 * (mean(q1[[m]], na.rm = TRUE) / mean(q0[[m]], na.rm = TRUE) - 1))
+round(change, 1)   # percent change in mean flow
+```
+
+The models agree on the direction but not the size of the change. That
+spread is part of the uncertainty in any projection, and the reason for
+running several models rather than one.
+
+```{r monthly, fig.height = 3.5, fig.alt = "Change in mean monthly flow for each model under 2 degrees warmer and 10 percent drier forcing"}
+month <- factor(month.abb[as.integer(format(q0$date, "%m"))], levels = month.abb[c(10:12, 1:9)])
+monthly <- function(q) sapply(models, function(m) tapply(q[[m]], month, mean, na.rm = TRUE))
+d <- as.data.frame(as.table(monthly(q1) - monthly(q0)))
+names(d) <- c("month", "model", "change_mm_day")
+library(ggplot2)
+ggplot(d, aes(month, change_mm_day, color = model, group = model)) +
+  geom_hline(yintercept = 0, color = "grey60") + geom_line() + geom_point(size = 1) +
+  labs(x = NULL, y = "Change in mean flow (mm/day)", color = NULL,
+       title = "+2 °C, -10% precipitation: change in mean monthly flow") +
+  theme_minimal()
+```
+
+With climate projections, the same call runs each model on each climate
+model's historical and future forcing; comparing the two runs of the same
+climate model gives the projected change.
+
+## Parameters
+
+```{r coef}
+head(coef(fits), 10)
+```
+
+```{r params, fig.height = 6, fig.alt = "Calibrated parameter values as a fraction of their bounds, one point per cross-validation fold"}
+plot(fits, type = "params")
+```
