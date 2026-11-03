@@ -1,0 +1,642 @@
+---
+title: "Lumped WBM + IHACRES routing: blocked cross-validation"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+params:
+  pet_method: "penman_monteith"  # "penman_monteith" or "gridmet" (x Kc), or "oudin"/"hamon"
+  k_folds: 5              # number of contiguous water-year blocks
+  n_evals: 1000           # DDS model runs per calibration (per fold)
+  n_cores: 5              # folds calibrated in parallel
+  rerun: false            # TRUE = ignore cached results and recalibrate
+  out_dir: null           # default: data/processed/results/wbm_ihacres_<pet_method>
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 6, dpi = 120)
+source(here::here("scripts/00_setup.R"))
+```
+
+# Purpose
+
+Baseline process model for the shared test gauges, and the template for
+how every later model (distributed, other routing, LSTM) gets evaluated.
+
+1. GridMET basin-mean forcing → `wbm_run()` → daily runoff (mm)
+2. Runoff → `route_ihacres()` → streamflow (mm/day)
+3. WBM and routing parameters calibrated **jointly** on KGE with
+   Dynamically Dimensioned Search (DDS; Tolson & Shoemaker 2007), a
+   derivative-free optimizer built for small run budgets
+4. 5-fold **blocked** cross-validation on contiguous water-year blocks
+   (WY1981 is warm-up and never scored)
+5. Test-fold skill compared with a day-of-year climatology benchmark fit on
+   the same training years
+
+What changed from the MORA workflow: the WBM and routing parameters are
+fit together (MORA fit runoff first, then routing). Every metric is
+reported on held-out water years. The fold design is shared with every
+other model in this repo.
+
+To run with different settings, knit with parameters, e.g.
+`rmarkdown::render("scripts/03_wbm_ihacres_cv.Rmd", params = list(pet_method = "gridmet"))`.
+Results are cached per gauge, so re-knitting only recalibrates gauges that
+have no cached result, or whose cached result was made with different
+bounds or calibration settings (or all of them with `rerun = TRUE`).
+
+```{r paths}
+pet_method <- params$pet_method
+out_dir <- params$out_dir %||%
+  here::here("data", "processed", "results", paste0("wbm_ihacres_", pet_method))
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Gauges are identified by site number + official USGS station name only, so
+# swapping a gauge in config/test_gauges.csv needs no changes here.
+gauges <- get_test_gauges()
+
+# A gauge is usable once scripts/02_get_data.R has written its inputs
+gauges$has_data <- file.exists(here::here("data", "processed", gauges$site_no, "daily.parquet"))
+gauge_levels <- gauges$gauge_label   # fixed facet/legend order
+knitr::kable(dplyr::select(gauges, gauge_label, state, ecoregion, drain_sqkm, has_data),
+             digits = 0, col.names = c("Gauge", "State", "GAGES-II ecoregion", "Area (km²)", "Data ready"))
+```
+
+```{r load-data}
+# Read each gauge's model-ready daily table and static WBM parameters
+inputs <- gauges %>%
+  dplyr::filter(has_data) %>%
+  dplyr::pull(site_no) %>%
+  rlang::set_names() %>%
+  purrr::map(function(site) list(
+    daily = arrow::read_parquet(here::here("data", "processed", site, "daily.parquet")),
+    static = readr::read_csv(here::here("data", "processed", site, "static.csv"), show_col_types = FALSE)
+  ))
+
+label_of <- function(site) factor(gauges$gauge_label[match(site, gauges$site_no)], levels = gauge_levels)
+```
+
+# Inputs at a glance
+
+Look at the climate and flow regimes before calibrating anything. The water
+balance model can only work if the climate inputs and the observed flow are
+roughly consistent: runoff ratios above ~1, or a big mismatch in the
+timing of the seasonal cycle, point to forcing or area problems rather
+than model problems.
+
+```{r static-table}
+purrr::imap_dfr(inputs, ~ dplyr::mutate(.x$static, site_no = .y)) %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  dplyr::select(gauge, elev_m, slope_deg, aspect_deg, swc_max_mm, jtemp_c, kc_dormant, kc_growing, lat) %>%
+  knitr::kable(digits = 1, caption = "Basin-mean static WBM parameters")
+```
+
+```{r annual-balance, fig.height = 4}
+# Water-year totals: precipitation vs. observed runoff. The runoff ratio Q/P
+# is the first sanity check on forcing and drainage area.
+annual <- purrr::imap_dfr(inputs, function(x, site) {
+  x$daily %>%
+    dplyr::filter(wy > min(wy)) %>%                          # drop the warm-up year
+    dplyr::group_by(wy) %>%
+    dplyr::summarize(P = sum(prcp_mm), Q = sum(q_mm), PET_ref = sum(pet_ref_mm),
+                     frac_obs = mean(!is.na(q_mm)), .groups = "drop") %>%
+    dplyr::mutate(site_no = site)
+}) %>%
+  dplyr::filter(frac_obs > 0.95) %>%
+  dplyr::mutate(gauge = label_of(site_no))
+
+annual %>%
+  dplyr::group_by(gauge) %>%
+  dplyr::summarize(P = mean(P), Q = mean(Q), runoff_ratio = mean(Q / P),
+                   aridity = mean(PET_ref / P), n_wy = dplyr::n()) %>%
+  knitr::kable(digits = 2, caption = "Mean annual totals (mm) for complete water years; aridity = GridMET reference ET / P")
+
+ggplot(annual, aes(P, Q, color = gauge)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, color = "grey50") +
+  geom_point(alpha = 0.7) +
+  labs(x = "Water-year precipitation (mm)", y = "Water-year runoff (mm)", color = NULL,
+       subtitle = "Points above the dashed line have more runoff than precipitation") +
+  theme_minimal() + theme(legend.position = "bottom", legend.direction = "vertical")
+```
+
+```{r monthly-regime, fig.height = 7}
+# Mean monthly cycle of precipitation, temperature, and observed flow: shows
+# snow-dominated (Q lags P) vs. rain-dominated (Q tracks P) regimes.
+monthly <- purrr::imap_dfr(inputs, function(x, site) {
+  x$daily %>%
+    dplyr::mutate(month = as.integer(format(date, "%m"))) %>%
+    dplyr::group_by(month) %>%
+    dplyr::summarize(`P (mm/day)` = mean(prcp_mm), `Q obs (mm/day)` = mean(q_mm, na.rm = TRUE),
+                     `T mean (°C)` = mean(tmean_c), .groups = "drop") %>%
+    dplyr::mutate(site_no = site)
+}) %>%
+  tidyr::pivot_longer(-c(month, site_no)) %>%
+  dplyr::mutate(gauge = label_of(site_no))
+
+ggplot(monthly, aes(month, value, color = name)) +
+  geom_line() + geom_point(size = 0.8) +
+  facet_wrap(~ gauge, ncol = 2, scales = "free_y") +
+  scale_x_continuous(breaks = c(1, 4, 7, 10)) +
+  labs(x = "Month", y = NULL, color = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+# Model and parameters
+
+The model is a chain of two pieces:
+
+- **Water balance (`wbm_run`)**: rain and snow split on the Jennings rain–snow
+  threshold temperature, degree-day snowmelt, PET, and a soil bucket that
+  dries exponentially. Any water the soil can't hold is that day's runoff.
+- **PET**: FAO-56 Penman-Monteith grass reference ET (ETo) from GridMET
+  temperature, shortwave radiation, humidity, and 10 m wind (converted to
+  2 m), times a crop coefficient. Kc is **not calibrated**: each basin's
+  dormant- and growing-season Kc are area-weighted from NLCD 2019 upstream
+  land cover (`inst/extdata/kc_nlcd.csv`), and daily Kc ramps between them on a
+  15-day trailing mean temperature (fully dormant ≤ 2 °C, fully growing
+  ≥ 10 °C). PET is 0 when snowpack exceeds 2 mm SWE. This replaces the
+  calibrated `pet_mult`, so PET error can no longer be absorbed by a free
+  multiplier.
+- **Routing (`route_ihacres`)**: runoff is split between a quick and a slow
+  linear reservoir; an optional fraction is lost to deep groundwater.
+
+The WBM's own excess-water store (`return_rate`) does the same job as the
+routing stores, so it's fixed at 1 to avoid two parameters trading off.
+The routing `delay` is a whole number of days (0–2). DDS searches it
+directly. Basins under ~600 km² should mostly need a 0–1 day lag, plus any
+offset between the GridMET day (ending ~12 UTC) and the USGS calendar day.
+
+```{r bounds}
+# Calibration ranges. Equal lower/upper bounds fix a parameter.
+# Widened after the first PM x Kc run, where fits sat on these bounds:
+# hock = 1 (Duckabush, Sycamore), soil_mult = 0.3 (Chattooga) and ~3
+# (Duckabush), tau_q = 15 (Crystal), jtemp_offset ~2 (Crystal).
+# Previous results: data/processed/results/wbm_ihacres_penman_monteith_bounds_v1/
+bounds <- param_bounds(
+  hock         = c(0.5, 8),     # degree-day melt factor (mm °C⁻¹ day⁻¹)
+  jtemp_offset = c(-3, 3),      # shift on the rain/snow threshold (°C)
+  soil_mult    = c(0.1, 5),     # multiplier on soil water capacity
+  tau_q        = c(0.5, 30),    # quickflow recession (days)
+  tau_s        = c(10, 400),    # slowflow recession (days)
+  vs           = c(0.05, 0.95), # fraction of runoff routed through the slow store
+  loss         = c(0, 0.5),     # fraction lost to deep groundwater
+  delay        = c(0, 2),       # routing lag (whole days)
+  .integer = "delay"
+)
+wbm_pars <- c("hock", "jtemp_offset", "soil_mult")
+knitr::kable(bounds, caption = "Calibration bounds")
+
+# Build the closure the calibrator calls: parameters in, simulated
+# streamflow (mm/day) out, aligned day-for-day with the observations.
+make_model_fn <- function(daily, static, return_wbm = FALSE) {
+  function(p) {
+    wb <- wbm_run(daily, c(as.list(static), p[wbm_pars]), pet_method = pet_method)
+    q <- route_ihacres(wb$runoff, tau_q = p$tau_q, tau_s = p$tau_s, vs = p$vs,
+                       loss = p$loss, delay = p$delay)
+    if (return_wbm) dplyr::mutate(wb, q_sim = q) else q
+  }
+}
+```
+
+# Cross-validation design
+
+The water years after the warm-up are cut into `r params$k_folds`
+contiguous blocks. In fold *i*, block *i* is the test set and all other
+blocks are training. The model always runs the **whole** record (it needs
+continuous snow and soil states); the fold only decides which days count
+toward the objective. Because nothing about the test years enters
+calibration except through the model state, no buffer is needed here.
+LSTMs will need a buffer at least as long as their input sequence.
+
+```{r fold-layout, fig.height = 2.5}
+example_dates <- inputs[[1]]$daily$date
+folds_example <- make_blocked_folds(example_dates, k = params$k_folds, warmup_years = 1)
+folds_example %>%
+  dplyr::distinct(fold, wy, role) %>%
+  ggplot(aes(wy, factor(fold), fill = role)) +
+  geom_tile(color = "white") +
+  scale_fill_manual(values = c(train = "#9ecae1", test = "#b02a24", warmup = "grey70")) +
+  labs(x = "Water year", y = "Fold", fill = NULL) +
+  theme_minimal()
+```
+
+# Calibrate and cross-validate
+
+Each gauge's results are saved to `r out_dir` as soon as that gauge
+finishes, so an interrupted run keeps the gauges it completed. Within a
+gauge the `r params$k_folds` folds are calibrated in parallel on
+`r params$n_cores` cores; each fold uses its own fixed seed, so results are
+identical whatever `n_cores` is.
+
+```{r run-cv}
+# Settings that change the calibration result. A cached result is reused
+# only if it was made with exactly these, including the gauge's static
+# inputs (so editing inst/extdata/kc_nlcd.csv and re-running 02_get_data.R
+# triggers recalibration).
+cv_settings <- list(pet_method = pet_method, k_folds = params$k_folds,
+                    n_evals = params$n_evals, bounds = bounds)
+
+run_gauge_cv <- function(site) {
+  cache <- file.path(out_dir, paste0(site, "_cv.rds"))
+  site_settings <- c(cv_settings, list(static = as.list(inputs[[site]]$static)))
+  if (file.exists(cache) && !isTRUE(params$rerun)) {
+    cached <- readRDS(cache)
+    if (isTRUE(all.equal(cached$settings, site_settings))) return(cached)
+    message(site, ": cached result used different settings; recalibrating")
+  }
+
+  x <- inputs[[site]]
+  stopifnot(!anyNA(x$daily$prcp_mm), !anyNA(x$daily$tmean_c))
+  obs <- x$daily$q_mm
+  model_fn <- make_model_fn(x$daily, x$static)
+  folds <- make_blocked_folds(x$daily$date, k = params$k_folds, warmup_years = 1)
+
+  t0 <- Sys.time()
+  cv <- cross_validate_model(model_fn, bounds, obs, folds, objective = kge,
+                             n_evals = params$n_evals, n_cores = params$n_cores, seed = 1)
+
+  # Lower benchmark on the identical folds: mean flow for each day of year,
+  # estimated from the training years only
+  bench <- purrr::map_dfr(seq_len(params$k_folds), function(f) {
+    fd <- folds[folds$fold == f, ]
+    b <- benchmark_doy_climatology(obs, fd$date, fd$role == "train")
+    te <- fd$role == "test"
+    dplyr::mutate(eval_metrics(obs[te], b[te]), fold = f, set = "test", .before = 1)
+  })
+
+  res <- list(
+    metrics = dplyr::bind_rows(dplyr::mutate(cv$metrics, model = "WBM + IHACRES"),
+                               dplyr::mutate(bench, model = "DOY climatology")),
+    params = cv$params,
+    sims = cv$sims,
+    traces = cv$traces,
+    settings = site_settings,
+    minutes = as.numeric(difftime(Sys.time(), t0, units = "mins"))
+  )
+  saveRDS(res, cache)
+  res
+}
+
+cv_results <- purrr::map(rlang::set_names(names(inputs)), run_gauge_cv)
+
+# Stack per-gauge results into tidy tables
+metrics <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$metrics, site_no = .y))
+cv_params <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$params, site_no = .y))
+sims <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$sims, site_no = .y))
+traces <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$traces, site_no = .y))
+
+readr::write_csv(metrics, file.path(out_dir, "cv_metrics.csv"))
+readr::write_csv(cv_params, file.path(out_dir, "cv_params.csv"))
+arrow::write_parquet(sims, file.path(out_dir, "cv_test_sims.parquet"))
+
+tibble::tibble(gauge = label_of(names(cv_results)),
+               minutes = purrr::map_dbl(cv_results, "minutes")) %>%
+  knitr::kable(digits = 1, caption = "Calibration time per gauge (cached gauges show their original run time)")
+```
+
+# Results
+
+## Calibration convergence
+
+Best training KGE found so far vs. number of model runs, one line per fold.
+Curves that are still climbing at the end mean `n_evals` is too small for
+that gauge; flat tails mean runs are being wasted and `n_evals` can drop.
+
+```{r convergence, fig.height = 4}
+traces %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  dplyr::filter(objective > -1) %>%                 # hide the penalty floor from failed early runs
+  ggplot(aes(eval, objective, group = fold)) +
+  geom_line(color = "#1b6ca8", alpha = 0.7) +
+  facet_wrap(~ gauge, ncol = 3, scales = "free_y", labeller = label_wrap_gen(30)) +
+  labs(x = "Model runs", y = "Best training KGE so far") +
+  theme_minimal(base_size = 9)
+```
+
+## Skill on held-out water years
+
+Each point is one test fold. The model is only useful where it clearly beats
+the day-of-year climatology. KGE > −0.41 already beats the *mean-flow*
+benchmark (Knoben et al. 2019), so compare against the climatology points,
+not against zero.
+
+```{r skill-plot, fig.height = 5}
+test_metrics <- metrics %>%
+  dplyr::filter(set == "test") %>%
+  dplyr::mutate(gauge = label_of(site_no))
+
+test_metrics %>%
+  tidyr::pivot_longer(c(kge, nse, log_nse), names_to = "metric") %>%
+  ggplot(aes(value, gauge, color = model)) +
+  geom_vline(xintercept = 0, color = "grey60") +
+  geom_point(position = position_dodge(width = 0.5), alpha = 0.8) +
+  facet_wrap(~ metric, scales = "free_x") +
+  scale_color_manual(values = c("WBM + IHACRES" = "#1b6ca8", "DOY climatology" = "grey40")) +
+  labs(x = NULL, y = NULL, color = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+
+test_metrics %>%
+  dplyr::group_by(gauge, model) %>%
+  dplyr::summarize(dplyr::across(c(kge, nse, log_nse, pbias), median), .groups = "drop") %>%
+  knitr::kable(digits = 2, caption = "Median across test folds")
+```
+
+## Overfitting check: train vs. test
+
+A large drop from train to test means the parameters are fitting
+noise in the calibration years rather than the basin's behavior.
+
+```{r train-test, fig.height = 4}
+metrics %>%
+  dplyr::filter(model == "WBM + IHACRES") %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  dplyr::select(gauge, fold, set, kge) %>%
+  tidyr::pivot_wider(names_from = set, values_from = kge) %>%
+  ggplot(aes(train, test, color = gauge)) +
+  geom_abline(linetype = 2, color = "grey50") +
+  geom_point(size = 2) +
+  coord_equal() +
+  labs(x = "KGE (train)", y = "KGE (test)", color = NULL) +
+  theme_minimal() + theme(legend.position = "right")
+```
+
+## Why the fit is good or bad: KGE components
+
+KGE combines correlation (*r*, timing), variability ratio (*α*, flashiness),
+and bias ratio (*β*, volume); ideal is 1 for each. Pulling the components
+apart shows which part of the hydrograph the model gets wrong.
+
+```{r kge-components, fig.height = 4}
+test_metrics %>%
+  dplyr::filter(model == "WBM + IHACRES") %>%
+  tidyr::pivot_longer(c(kge_r, kge_alpha, kge_beta), names_to = "component") %>%
+  ggplot(aes(value, gauge)) +
+  geom_vline(xintercept = 1, linetype = 2, color = "grey50") +
+  geom_point(color = "#1b6ca8", alpha = 0.8) +
+  facet_wrap(~ component, scales = "free_x",
+             labeller = as_labeller(c(kge_r = "r (timing)", kge_alpha = "α (variability)", kge_beta = "β (bias)"))) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal()
+```
+
+## Parameter stability across folds
+
+If a parameter swings across its whole range from fold to fold while
+skill stays similar, it is poorly identified (equifinality). Those
+parameters are candidates to fix or to tie to basin attributes.
+
+```{r param-stability, fig.height = 6}
+cv_params %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  tidyr::pivot_longer(dplyr::all_of(bounds$param[bounds$lower < bounds$upper]), names_to = "param") %>%
+  dplyr::left_join(bounds, by = "param") %>%
+  dplyr::mutate(scaled = (value - lower) / (upper - lower)) %>%   # 0 = lower bound, 1 = upper
+  ggplot(aes(scaled, gauge)) +
+  geom_point(color = "#1b6ca8", alpha = 0.7) +
+  facet_wrap(~ param, ncol = 4) +
+  scale_x_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  labs(x = "Position within calibration bounds (0 = lower, 1 = upper)", y = NULL,
+       subtitle = "Points piled on 0 or 1 mean the bound is limiting the fit") +
+  theme_minimal()
+```
+
+## Hydrographs (out-of-fold predictions)
+
+Every day shown was predicted by parameters that never saw that water year.
+
+```{r hydrographs, fig.height = 10}
+sims_l <- sims %>% dplyr::mutate(gauge = label_of(site_no))
+
+sims_l %>%
+  dplyr::group_by(site_no) %>%
+  dplyr::filter(date >= max(date) - 3 * 365) %>%             # last 3 water years
+  tidyr::pivot_longer(c(obs, sim), names_to = "series", values_to = "q_mm") %>%
+  ggplot(aes(date, q_mm, color = series)) +
+  geom_line(linewidth = 0.3) +
+  facet_wrap(~ gauge, ncol = 1, scales = "free_y") +
+  scale_color_manual(values = c(obs = "black", sim = "#1b6ca8")) +
+  labs(x = NULL, y = "Streamflow (mm/day)", color = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+## Flow duration curves
+
+Highlights high- and low-flow errors that daily efficiency scores average
+over. The log scale makes low-flow behavior visible.
+
+```{r fdc, fig.height = 6}
+sims_l %>%
+  tidyr::pivot_longer(c(obs, sim), names_to = "series", values_to = "q_mm") %>%
+  dplyr::filter(!is.na(q_mm)) %>%
+  dplyr::group_by(gauge, series) %>%
+  dplyr::mutate(exceedance = 1 - (rank(q_mm, ties.method = "first") - 0.5) / dplyr::n()) %>%
+  ggplot(aes(exceedance, pmax(q_mm, 1e-3), color = series)) +
+  geom_line() +
+  scale_y_log10() +
+  facet_wrap(~ gauge, ncol = 2, scales = "free_y") +
+  scale_color_manual(values = c(obs = "black", sim = "#1b6ca8")) +
+  labs(x = "Exceedance probability", y = "Streamflow (mm/day, log)", color = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+## Seasonal cycle
+
+Errors in the mean monthly hydrograph usually come from snow (timing of
+melt) or PET (summer recession).
+
+```{r seasonal, fig.height = 6}
+sims_l %>%
+  dplyr::mutate(month = as.integer(format(date, "%m"))) %>%
+  dplyr::group_by(gauge, month) %>%
+  dplyr::summarize(obs = mean(obs, na.rm = TRUE), sim = mean(sim), .groups = "drop") %>%
+  tidyr::pivot_longer(c(obs, sim), names_to = "series", values_to = "q_mm") %>%
+  ggplot(aes(month, q_mm, color = series)) +
+  geom_line() + geom_point(size = 0.8) +
+  facet_wrap(~ gauge, ncol = 2, scales = "free_y") +
+  scale_x_continuous(breaks = c(1, 4, 7, 10)) +
+  scale_color_manual(values = c(obs = "black", sim = "#1b6ca8")) +
+  labs(x = "Month", y = "Mean streamflow (mm/day)", color = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+## Internal water balance
+
+Re-run each gauge with its median cross-validated parameters to look at
+the internal fluxes. Implausible snowpack or AET here can explain a
+good-looking hydrograph that is right for the wrong reasons.
+
+```{r internal-fluxes, fig.height = 7}
+median_params <- cv_params %>%
+  dplyr::group_by(site_no) %>%
+  dplyr::summarize(dplyr::across(dplyr::all_of(bounds$param), median), .groups = "drop")
+
+internal <- purrr::map_dfr(names(inputs), function(site) {
+  p <- as.list(dplyr::filter(median_params, site_no == site)[bounds$param])
+  make_model_fn(inputs[[site]]$daily, inputs[[site]]$static, return_wbm = TRUE)(p) %>%
+    dplyr::mutate(site_no = site)
+})
+
+internal %>%
+  dplyr::filter(calc_water_year(date) > min(calc_water_year(date))) %>%   # drop warm-up
+  dplyr::mutate(month = as.integer(format(date, "%m"))) %>%
+  dplyr::group_by(site_no, month) %>%
+  dplyr::summarize(Snowpack = mean(snowpack), `Soil water` = mean(soil),
+                   ETo = mean(pet_ref) * 30, PET = mean(pet) * 30, AET = mean(aet) * 30,
+                   Runoff = mean(runoff) * 30,
+                   .groups = "drop") %>%
+  tidyr::pivot_longer(-c(site_no, month)) %>%
+  dplyr::mutate(gauge = label_of(site_no),
+                type = ifelse(name %in% c("Snowpack", "Soil water"), "Storage (mm)", "Flux (mm/month)")) %>%
+  ggplot(aes(month, value, color = name)) +
+  geom_line() +
+  facet_grid(type ~ gauge, scales = "free_y", labeller = labeller(gauge = label_wrap_gen(18))) +
+  scale_x_continuous(breaks = c(1, 4, 7, 10)) +
+  labs(x = "Month", y = NULL, color = NULL) +
+  theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+```
+
+## Long-term water budget check
+
+Over many years, storage change is negligible in these reference basins,
+so mean observed P − Q approximates mean actual ET. It's an independent
+check on PET and Kc that doesn't depend on calibration: modeled AET far
+below P − Q means PET is too low, and the calibration will then use other
+parameters (bigger soil bucket, groundwater `loss`) to get rid of the
+extra water.
+
+```{r water-budget}
+internal %>%
+  dplyr::left_join(dplyr::bind_rows(purrr::imap(inputs, ~ dplyr::select(.x$daily, date, q_mm) %>%
+                                                  dplyr::mutate(site_no = .y))),
+                   by = c("site_no", "date")) %>%
+  dplyr::filter(calc_water_year(date) > min(calc_water_year(date))) %>%
+  dplyr::group_by(site_no) %>%
+  dplyr::summarize(yrs = dplyr::n() / 365.25,
+                   P = sum(prcp) / yrs, ETo = sum(pet_ref) / yrs, PET = sum(pet) / yrs,
+                   AET_model = sum(aet) / yrs,
+                   `P - Q obs` = (sum(prcp[!is.na(q_mm)]) - sum(q_mm, na.rm = TRUE)) / (sum(!is.na(q_mm)) / 365.25)) %>%
+  dplyr::mutate(gauge = label_of(site_no), `AET / (P - Q)` = AET_model / `P - Q obs`) %>%
+  dplyr::select(gauge, P, ETo, PET, AET_model, `P - Q obs`, `AET / (P - Q)`) %>%
+  knitr::kable(digits = c(0, 0, 0, 0, 0, 0, 2), caption = "Mean annual water budget (mm/yr), median CV parameters, WY1982-2024")
+```
+
+# Experiment log
+
+What has been tried in this notebook, in order, and what was learned.
+Each run's outputs are kept in its own folder under
+`data/processed/results/`; the table below is rebuilt from those folders
+when they exist.
+
+| Run | Folder | PET | Kc | Calibrated params | Bounds |
+|---|---|---|---|---|---|
+| 1 | `wbm_ihacres_oudin` | Oudin (heat-load adjusted) | none | + `pet_mult` (0.6–1.6) | original |
+| 2 | `wbm_ihacres_penman_monteith_bounds_v1` | FAO-56 PM ETo | placeholder table | `pet_mult` removed | original |
+| 3 | `wbm_ihacres_penman_monteith` (**current**) | FAO-56 PM ETo | placeholder table | `pet_mult` removed | widened |
+| 4 | `wbm_ihacres_penman_monteith_kc_liu2017` | FAO-56 PM ETo | Liu et al. (2017) FLUXNET | `pet_mult` removed | widened |
+| 5a | `lstm_single_basin_val_last` (notebook 04) | none (ETo is an input) | none | LSTM weights; 3-seed ensemble; validation = last 5 training WY | n/a |
+| 5b | `lstm_single_basin` (notebook 04) | none (ETo is an input) | none | as 5a; validation = 5 WY spread across training | n/a |
+| 6 | `gr4j_cemaneige` (notebook 05) | FAO-56 PM ETo | placeholder table | X1-X4, C1, C2 (6 params) | airGR defaults |
+
+Original bounds: `hock` 1–8, `jtemp_offset` ±2, `soil_mult` 0.3–3,
+`tau_q` 0.5–15. Widened: `hock` 0.5–8, `jtemp_offset` ±3, `soil_mult`
+0.1–5, `tau_q` 0.5–30. All runs: DDS with 1,000 runs per fold, 5 blocked
+folds, KGE objective.
+
+```{r experiment-log}
+runs <- tibble::tribble(
+  ~run, ~folder,
+  "1 Oudin + pet_mult",          "wbm_ihacres_oudin",
+  "2 PM x Kc (placeholder)",     "wbm_ihacres_penman_monteith_bounds_v1",
+  "3 PM x Kc, wide bounds",      "wbm_ihacres_penman_monteith",
+  "4 PM x Kc (Liu 2017)",        "wbm_ihacres_penman_monteith_kc_liu2017",
+  "5a LSTM (val = last 5 WY)",   "lstm_single_basin_val_last",
+  "5b LSTM (val spread)",        "lstm_single_basin",
+  "6 CemaNeige-GR4J",            "gr4j_cemaneige"
+)
+log_metrics <- purrr::pmap_dfr(runs, function(run, folder) {
+  f <- here::here("data", "processed", "results", folder, "cv_metrics.csv")
+  if (!file.exists(f)) return(NULL)
+  readr::read_csv(f, show_col_types = FALSE) %>%
+    dplyr::filter(set == "test", model %in% c("WBM + IHACRES", "LSTM (single basin)", "CemaNeige-GR4J")) %>%
+    dplyr::mutate(run = run)
+})
+if (nrow(log_metrics) > 0) {
+  log_metrics %>%
+    dplyr::group_by(gauge = label_of(site_no), run) %>%
+    dplyr::summarize(KGE = median(kge), `log-NSE` = median(log_nse), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = run, values_from = c(KGE, `log-NSE`), names_glue = "{.value} | {run}") %>%
+    knitr::kable(digits = 2, caption = "Median test-fold skill by run")
+}
+```
+
+**Run 1 → 2 (Oudin to Penman-Monteith × Kc).** Oudin PET was only 40–65%
+of FAO-56 ETo at every basin, and the calibration made up for it with
+`pet_mult` > 1 and a soil multiplier pinned at its upper bound (3) at
+Swift, Chattooga, and Duckabush. Switching to PM × land-cover Kc and
+removing `pet_mult` kept KGE about the same with one fewer free
+parameter, and Swift's soil multiplier dropped to 0.5–1.1 with much
+better low flows (log-NSE −0.05 → 0.30).
+
+**Run 2 → 3 (widened bounds).** Parameters sitting on bounds were given
+room. Test KGE moved by only ±0.02, so the bounds were not the main limit.
+Low flows improved at Chattooga and Sycamore but got much worse at
+Duckabush (a larger bucket traded low-flow fit for KGE). Remaining signs
+of structural or forcing problems: Duckabush still wants a very large
+bucket (likely GridMET precipitation undercatch: observed runoff is 86%
+of P), Chattooga wants a very small one (Kc probably too high for mixed
+forest), and `hock` is unidentifiable at rain-dominated Chattooga.
+
+**Run 3 → 4 (Liu et al. 2017 Kc), rejected.** The forest, shrub,
+grassland, and crop rows were replaced with FLUXNET seasonal Kc from Liu
+et al. (2017, Table 1; FAO-56 grass ETo basis; dormant = Nov–Jan mean,
+growing = largest seasonal mean). Basin Kc fell by roughly 40%
+(e.g. Chattooga 0.59/0.98 → 0.36/0.62). Modeled AET then fell well below
+the long-term water budget (Duckabush 193 vs. 358 mm/yr P − Q; Crystal
+219 vs. 387; Swift 384 vs. 568; Chattooga 706 vs. 844; Sycamore 448
+vs. 494). The calibration compensated by pushing `soil_mult` to its new
+upper bound (5) and raising groundwater `loss` at every basin, and test
+skill dropped (Sycamore KGE 0.58 → 0.35; log-NSE fell at Swift,
+Chattooga, and Crystal). **Cause:** Liu et al. report *actual* Kc
+(AET/ETo), which already includes water stress and snow-covered winters.
+This model applies both limits again (soil bucket, zero ET under snow),
+so actual Kc double counts them. They are a lower bound on the
+*potential* Kc this model needs. The table was reverted to the
+placeholder potential Kc; the Liu table is archived in
+`inst/extdata/kc_nlcd_liu2017.csv`.
+
+**Runs 5-6 (LSTM and GR4J comparisons; see notebooks 04 and 05).** On
+the same test days, the single-basin LSTM beat WBM + IHACRES on low flows
+at four basins (log-NSE 0.69-0.86) but failed at intermittent Sycamore
+Creek (KGE 0.08), where the last-5-years validation block was too dry for
+early stopping to work (run 5a). Run 5b spreads the 5 validation water
+years across the training period instead: Sycamore's models now train a
+median of 36 epochs (vs. 2), and its test KGE rose from 0.08 to 0.38,
+still well short of GR4J (0.76) and the WBM (0.58). The other basins
+changed by -0.03 to +0.02 KGE. A single-basin LSTM remains data-limited
+for intermittent flow, where a few events carry most of the volume (the
+top 1% of days hold 48% of Sycamore's flow). CemaNeige-GR4J, with the same forcing, PET, folds,
+and calibration but 6 parameters instead of 8, matched or beat the WBM
+everywhere (median test KGE 0.76-0.86), most clearly at Sycamore (0.76
+vs. 0.58) and on Duckabush low flows (log-NSE 0.76 vs. -0.48). So the
+WBM's weaknesses are largely structural (single-elevation snow, soil
+bucket, routing), not inherent to the forcing.
+
+**Current configuration:** run 3. The vegetated Kc values are still
+placeholders (informed judgment, not literature values). Candidates for a
+principled replacement: FAO-56 / Allen & Pereira (2009) potential Kc from
+canopy cover and height, or MODIS vegetation-index Kc. Either can be
+tested with the water budget check above plus this CV.
+
+# Notes and next steps
+
+- Compare PET methods by re-knitting with `params = list(pet_method = "gridmet")`
+  (GridMET's own ETo x the same Kc) or `"oudin"`; each writes to its own
+  results folder. The Oudin run in `wbm_ihacres_oudin/` used a calibrated
+  `pet_mult`, so compare it knowing that.
+- Kc values in `inst/extdata/kc_nlcd.csv` are placeholders; after editing, re-run
+  `scripts/02_get_data.R` (fast, everything else is cached) and re-knit.
+- Parameters that hit their bounds or swing between folds are the first
+  candidates to fix or constrain.
+- The fold tables and `eval_metrics()` outputs here are the comparison
+  format for the distributed, routing, and LSTM experiments.

@@ -1,0 +1,175 @@
+---
+title: "All process models at one gauge"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+params:
+  site_no: "06752260"     # gauge id: USGS site number, CDSS abbreviation, or your own id
+  flow_source: "usgs"     # "usgs", "cdss" (Colorado DWR via cdssr) or "csv"
+  csv_path: null          # flow_source = "csv": file with daily flow
+  csv_date_col: "date"
+  csv_q_col: "q_cfs"
+  csv_units: "cfs"        # "cfs", "cms" or "mm" (mm needs area_km2)
+  lon: null               # outlet location; needed for "csv" (CDSS and USGS supply it)
+  lat: null
+  area_km2: null          # optional reference drainage area
+  models: ["wbm", "gr4j", "gr5j", "gr6j", "hbv"]
+  soil_depth_cm: 150      # SSURGO water-storage depth for the WBM soil bucket (100 or 150)
+  k_folds: 5
+  n_evals: 1000           # DDS runs per calibration (doubled for HBV)
+  n_cores: 5              # folds calibrated in parallel
+  n_layers: 5             # elevation bands for CemaNeige and HBV
+  min_obs_frac: 0.8       # water years with less observed flow are not scored
+  plot_years: 2           # water years shown in the hydrographs (most recent)
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 10, fig.height = 6, dpi = 120)
+source(here::here("scripts/00_setup.R"))
+```
+
+# What this does
+
+Pick a gauge (`params$site_no`) and a flow source (`params$flow_source`:
+USGS, Colorado DWR via CDSS, or your own csv). The whole workflow is five
+WSVAflowR calls:
+
+```r
+b    <- wsva_basin_usgs(site)            # or wsva_basin(flow_cdss(...)), wsva_basin(flow_from_csv(...))
+b    <- add_forcing(b)                   # GridMET basin-mean forcing
+b    <- add_basin_attributes(b)          # 3DEP terrain, SSURGO soils, Jennings, NLCD / Kc
+fits <- fit_models(b)                    # 5 models: blocked CV, climate-contrast test, full-record fit
+summary(fits); plot(fits)
+```
+
+Every model gets the same forcing, the same PET (Penman-Monteith ETo ×
+land-cover Kc, computed from the meteorological variables), the same folds
+and the same DDS calibration on KGE. Results are cached, so re-knitting
+only refits what changed.
+
+**Choosing a gauge.** Results are most meaningful at CAMELS or GAGES-II
+*Reference* gauges, whose flow is close to natural. Many state-operated
+gauges (e.g. Colorado DWR) sit below diversions or reservoirs. At other gauges,
+dams, diversions and withdrawals show up as model error. Large basins
+(> ~2,000 km²) also stretch these lumped models.
+
+# Basin
+
+```{r basin}
+b <- switch(params$flow_source,
+  usgs = wsva_basin_usgs(params$site_no),
+  cdss = wsva_basin(flow_cdss(params$site_no), area_km2 = params$area_km2),
+  csv = wsva_basin(flow_from_csv(params$csv_path, date_col = params$csv_date_col, q_col = params$csv_q_col,
+                                 units = params$csv_units, area_km2 = params$area_km2,
+                                 id = params$site_no, lon = params$lon, lat = params$lat),
+                   area_km2 = params$area_km2),
+  stop("flow_source must be usgs, cdss or csv"))
+b <- add_forcing(b)
+b <- add_basin_attributes(b, soil_depth_cm = params$soil_depth_cm)
+b
+out_dir <- wsva_path("processed", "results", paste0("gauge_", b$id))
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r checks}
+knitr::kable(check_basin(b, params$k_folds, params$min_obs_frac), caption = "Checks before fitting")
+knitr::kable(tidyr::pivot_longer(dplyr::mutate(b$static, dplyr::across(dplyr::everything(), as.character)),
+                                 dplyr::everything(), names_to = "attribute"),
+             caption = "Basin attributes")
+```
+
+```{r map, fig.height = 4, fig.width = 5}
+ggplot() +
+  geom_sf(data = b$polygon, fill = "#9ecae1", color = "#1b6ca8") +
+  geom_point(aes(b$outlet[1], b$outlet[2]), color = "#b02a24", size = 2) +
+  labs(title = paste(b$id, b$name), subtitle = b$provenance$basin, x = NULL, y = NULL) +
+  theme_minimal(base_size = 9)
+```
+
+# Fit
+
+```{r fit}
+fits <- fit_models(b, models = unlist(params$models), n_evals = params$n_evals, k_folds = params$k_folds,
+                   min_obs_frac = params$min_obs_frac, n_layers = params$n_layers, n_cores = params$n_cores)
+fits
+```
+
+# Results
+
+## Skill
+
+```{r summary}
+s <- summary(fits)
+knitr::kable(dplyr::select(s$skill, -id), digits = 2,
+             caption = "Held-out water years: median over blocked CV folds (pbias > 0 = under-prediction)")
+knitr::kable(dplyr::select(s$contrast, -id), digits = 2,
+             caption = "Calibrate in one climate extreme, test in the opposite (median over contrasts)")
+```
+
+```{r skill-plot, fig.height = 3.5}
+plot(fits, type = "skill")
+```
+
+## All models together
+
+Out-of-sample estimates: each day's value comes from a model calibrated
+without that water year.
+
+```{r overview, fig.height = 12}
+plot(fits, type = "overview", years = params$plot_years)
+ggplot2::ggsave(file.path(out_dir, "final_hydrograph.png"), plot(fits, "hydrograph", years = params$plot_years),
+                width = 10, height = 4, dpi = 150)
+```
+
+## Transfer to a different climate
+
+```{r contrast, fig.height = 4}
+plot(fits, type = "contrast")
+```
+
+## Parameters
+
+Position of each fold's calibrated parameters within the bounds; values
+pinned at 0 or 1 suggest the bounds or the model structure are limiting.
+
+```{r params, fig.height = 8}
+plot(fits, type = "params")
+coef(fits) %>%
+  dplyr::group_by(model) %>%
+  dplyr::summarize(parameters = paste(sprintf("%s=%.3g", param, value), collapse = ", ")) %>%
+  knitr::kable(caption = "Full-record calibration (the parameters predict() uses for new forcing)")
+```
+
+# Outputs
+
+```{r save}
+saveRDS(fits, file.path(out_dir, "fits.rds"))
+arrow::write_parquet(predict(fits), file.path(out_dir, "oos_predictions.parquet"))
+readr::write_csv(fits$metrics, file.path(out_dir, "cv_metrics.csv"))
+readr::write_csv(coef(fits), file.path(out_dir, "full_record_params.csv"))
+```
+
+Saved in `r out_dir`: `fits.rds` (the whole `wsva_fit`; reload it and call
+`predict(fits, forcing = ...)` with projected climate), the out-of-sample
+series, per-fold metrics, full-record parameters, and the hydrograph.
+
+To run another gauge:
+
+```r
+# USGS gauge
+rmarkdown::render("scripts/12_gauge_all_models.Rmd", params = list(site_no = "01013500"),
+                  output_dir = "data/processed/results/gauge_01013500")
+# Colorado DWR gauge (CDSS); the watershed is delineated at the station
+rmarkdown::render("scripts/12_gauge_all_models.Rmd",
+                  params = list(site_no = "CCACCRCO", flow_source = "cdss"),
+                  output_dir = "data/processed/results/gauge_CCACCRCO")
+# Your own flow data
+rmarkdown::render("scripts/12_gauge_all_models.Rmd",
+                  params = list(site_no = "my_gauge", flow_source = "csv", csv_path = "q.csv",
+                                csv_date_col = "Date", csv_q_col = "Q", csv_units = "cfs",
+                                lon = -105.27, lat = 40.01),
+                  output_dir = "data/processed/results/gauge_my_gauge")
+```

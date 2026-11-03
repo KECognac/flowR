@@ -1,0 +1,273 @@
+---
+title: "CemaNeige-GR4J benchmark: blocked cross-validation"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+params:
+  k_folds: 5
+  n_evals: 1000           # DDS model runs per calibration (per fold)
+  n_cores: 5              # folds calibrated in parallel
+  n_layers: 5             # CemaNeige elevation bands
+  rerun: false
+  out_dir: null           # default: data/processed/results/gr4j_cemaneige
+  wbm_dir: "wbm_ihacres_penman_monteith"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 6, dpi = 120)
+source(here::here("scripts/00_setup.R"))
+```
+
+# Purpose
+
+A standard conceptual benchmark for the WBM + IHACRES model (notebook 03),
+to tell whether its limits are specific to that model or shared by lumped
+conceptual models in general.
+
+**Model.** GR4J (Perrin et al. 2003, *J. Hydrol.* 279:275), with 4
+parameters: production store X1, groundwater exchange X2 (negative = loss),
+routing store X3, and unit-hydrograph time base X4. It is coupled to the
+CemaNeige snow model (Valéry et al. 2014, *J. Hydrol.* 517:1166): 2
+parameters (C1 snowpack thermal-state weighting, C2 degree-day melt
+factor), run on `r params$n_layers` elevation bands built from the basin
+hypsometry. Temperature and precipitation are extrapolated from the
+basin-mean elevation to each band. The implementation is `airGR`
+(Coron et al. 2017).
+
+**Held equal to notebook 03, so differences reflect model structure:**
+
+- the same GridMET basin-mean forcing
+- the same PET: FAO-56 Penman-Monteith ETo × the seasonal land-cover Kc
+  (`pet_ref_kc()`), without the WBM's zero-ET-under-snow rule (CemaNeige
+  handles snow, but GR4J's evaporation doesn't see the snowpack)
+- the same 5 blocked water-year folds (no buffer; WY1981 warm-up)
+- the same DDS calibration on KGE, 1,000 runs per fold
+- 6 free parameters, against the WBM's 8
+
+```{r paths}
+out_dir <- params$out_dir %||% here::here("data", "processed", "results", "gr4j_cemaneige")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+res_dir <- function(x) here::here("data", "processed", "results", x)
+
+gauges <- get_test_gauges()
+gauges$has_data <- file.exists(here::here("data", "processed", gauges$site_no, "daily.parquet"))
+gauge_levels <- gauges$gauge_label
+label_of <- function(site) factor(gauges$gauge_label[match(site, gauges$site_no)], levels = gauge_levels)
+
+inputs <- gauges %>%
+  dplyr::filter(has_data) %>%
+  dplyr::pull(site_no) %>%
+  rlang::set_names() %>%
+  purrr::map(function(site) {
+    p <- function(f) here::here("data", "processed", site, f)
+    daily <- arrow::read_parquet(p("daily.parquet"))
+    static <- readr::read_csv(p("static.csv"), show_col_types = FALSE)
+    hypso <- readr::read_csv(p("hypsometry.csv"), show_col_types = FALSE)$elev_m
+    list(daily = daily, static = static, hypso = hypso, pet = pet_ref_kc(daily, static))
+  })
+```
+
+```{r hypsometry, fig.height = 3.5}
+# Elevation range drives how much CemaNeige's bands differ from the mean
+purrr::imap_dfr(inputs, ~ tibble::tibble(site_no = .y, pct = 0:100, elev_m = .x$hypso)) %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  ggplot(aes(pct, elev_m, color = gauge)) +
+  geom_line() +
+  labs(x = "Percent of basin area below", y = "Elevation (m)", color = NULL) +
+  theme_minimal() + theme(legend.position = "right", legend.text = element_text(size = 7))
+```
+
+# Calibrate and cross-validate
+
+```{r run-cv}
+bounds <- gr4j_bounds()
+knitr::kable(bounds, caption = "Calibration bounds")
+
+gr4j_settings <- list(k_folds = params$k_folds, n_evals = params$n_evals,
+                      n_layers = params$n_layers, bounds = bounds)
+
+run_gauge_gr4j <- function(site) {
+  cache <- file.path(out_dir, paste0(site, "_gr4j_cv.rds"))
+  x <- inputs[[site]]
+  site_settings <- c(gr4j_settings, list(static = as.list(x$static), hypso = x$hypso))
+  if (file.exists(cache) && !isTRUE(params$rerun)) {
+    cached <- readRDS(cache)
+    if (isTRUE(all.equal(cached$settings, site_settings))) return(cached)
+    message(site, ": cached result used different settings; recalibrating")
+  }
+  setup <- gr4j_setup(x$daily, x$pet, x$hypso, z_inputs = x$static$elev_m, n_layers = params$n_layers)
+  model_fn <- function(p) gr4j_run(setup, p)
+  obs <- x$daily$q_mm
+  folds <- make_blocked_folds(x$daily$date, k = params$k_folds, warmup_years = 1)
+
+  t0 <- Sys.time()
+  cv <- cross_validate_model(model_fn, bounds, obs, folds, objective = kge,
+                             n_evals = params$n_evals, n_cores = params$n_cores, seed = 1)
+  res <- c(cv, list(settings = site_settings,
+                    minutes = as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+  res$metrics$model <- "CemaNeige-GR4J"
+  saveRDS(res, cache)
+  res
+}
+
+cv_results <- purrr::map(rlang::set_names(names(inputs)), run_gauge_gr4j)
+metrics <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$metrics, site_no = .y))
+cv_params <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$params, site_no = .y))
+sims <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$sims, site_no = .y))
+traces <- purrr::imap_dfr(cv_results, ~ dplyr::mutate(.x$traces, site_no = .y))
+
+readr::write_csv(metrics, file.path(out_dir, "cv_metrics.csv"))
+readr::write_csv(cv_params, file.path(out_dir, "cv_params.csv"))
+arrow::write_parquet(sims, file.path(out_dir, "cv_test_sims.parquet"))
+
+tibble::tibble(gauge = label_of(names(cv_results)),
+               minutes = purrr::map_dbl(cv_results, "minutes")) %>%
+  knitr::kable(digits = 1, caption = "Calibration time per gauge")
+```
+
+```{r convergence, fig.height = 4}
+traces %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  dplyr::filter(objective > -1) %>%
+  ggplot(aes(eval, objective, group = fold)) +
+  geom_line(color = "#1b6ca8", alpha = 0.7) +
+  facet_wrap(~ gauge, ncol = 3, scales = "free_y", labeller = label_wrap_gen(30)) +
+  labs(x = "Model runs", y = "Best training KGE so far") +
+  theme_minimal(base_size = 9)
+```
+
+# Results
+
+## Skill on held-out water years: all models
+
+GR4J, the WBM and the benchmark are scored on the identical test days.
+
+```{r compare}
+read_metrics <- function(dir, model_filter = NULL) {
+  f <- file.path(res_dir(dir), "cv_metrics.csv")
+  if (!file.exists(f)) return(NULL)
+  m <- readr::read_csv(f, show_col_types = FALSE) %>% dplyr::filter(set == "test")
+  if (!is.null(model_filter)) m <- dplyr::filter(m, model %in% model_filter)
+  m
+}
+all_test <- dplyr::bind_rows(
+  dplyr::filter(metrics, set == "test"),
+  read_metrics(params$wbm_dir, c("WBM + IHACRES", "DOY climatology"))
+) %>% dplyr::mutate(gauge = label_of(site_no))
+
+model_cols <- c("CemaNeige-GR4J" = "#459a74", "WBM + IHACRES" = "#1b6ca8",
+                "DOY climatology" = "grey40")
+
+all_test %>%
+  tidyr::pivot_longer(c(kge, nse, log_nse), names_to = "metric") %>%
+  ggplot(aes(value, gauge, color = model)) +
+  geom_vline(xintercept = 0, color = "grey60") +
+  geom_point(position = position_dodge(width = 0.7), alpha = 0.8) +
+  facet_wrap(~ metric, scales = "free_x") +
+  scale_color_manual(values = model_cols) +
+  labs(x = NULL, y = NULL, color = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+
+all_test %>%
+  dplyr::group_by(gauge, model) %>%
+  dplyr::summarize(dplyr::across(c(kge, nse, log_nse, pbias), median), .groups = "drop") %>%
+  knitr::kable(digits = 2, caption = "Median across test folds")
+```
+
+## Overfitting check and parameter stability
+
+```{r train-test, fig.height = 4}
+metrics %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  dplyr::select(gauge, fold, set, kge) %>%
+  tidyr::pivot_wider(names_from = set, values_from = kge) %>%
+  ggplot(aes(train, test, color = gauge)) +
+  geom_abline(linetype = 2, color = "grey50") +
+  geom_point(size = 2) + coord_equal() +
+  labs(x = "KGE (train)", y = "KGE (test)", color = NULL) +
+  theme_minimal()
+```
+
+```{r param-stability, fig.height = 5}
+cv_params %>%
+  dplyr::mutate(gauge = label_of(site_no)) %>%
+  tidyr::pivot_longer(dplyr::all_of(bounds$param), names_to = "param") %>%
+  dplyr::left_join(bounds, by = "param") %>%
+  dplyr::mutate(scaled = (value - lower) / (upper - lower)) %>%
+  ggplot(aes(scaled, gauge)) +
+  geom_point(color = "#459a74", alpha = 0.7) +
+  facet_wrap(~ param, ncol = 3) +
+  scale_x_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  labs(x = "Position within calibration bounds (0 = lower, 1 = upper)", y = NULL) +
+  theme_minimal()
+```
+
+## Hydrographs, flow duration, and seasonality
+
+```{r join-sims}
+read_sims <- function(dir, name) {
+  f <- file.path(res_dir(dir), "cv_test_sims.parquet")
+  if (!file.exists(f)) return(NULL)
+  arrow::read_parquet(f) %>% dplyr::select(site_no, date, !!name := sim)
+}
+both <- sims %>% dplyr::select(site_no, date, obs, gr4j = sim)
+for (x in list(list(params$wbm_dir, "wbm"))) {
+  s <- read_sims(x[[1]], x[[2]])
+  if (!is.null(s)) both <- dplyr::left_join(both, s, by = c("site_no", "date"))
+}
+both_long <- both %>%
+  tidyr::pivot_longer(-c(site_no, date), names_to = "series", values_to = "q_mm") %>%
+  dplyr::mutate(gauge = label_of(site_no))
+series_cols <- c(obs = "black", gr4j = "#459a74", wbm = "#1b6ca8")
+```
+
+```{r hydrographs, fig.height = 10}
+both_long %>%
+  dplyr::group_by(site_no) %>%
+  dplyr::filter(date >= max(date) - 2 * 365) %>%
+  ggplot(aes(date, q_mm, color = series)) +
+  geom_line(linewidth = 0.3) +
+  facet_wrap(~ gauge, ncol = 1, scales = "free_y") +
+  scale_color_manual(values = series_cols) +
+  labs(x = NULL, y = "Streamflow (mm/day)", color = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+```{r fdc, fig.height = 6}
+both_long %>%
+  dplyr::filter(!is.na(q_mm)) %>%
+  dplyr::group_by(gauge, series) %>%
+  dplyr::mutate(exceedance = 1 - (rank(q_mm, ties.method = "first") - 0.5) / dplyr::n()) %>%
+  ggplot(aes(exceedance, pmax(q_mm, 1e-3), color = series)) +
+  geom_line() +
+  scale_y_log10() +
+  facet_wrap(~ gauge, ncol = 2, scales = "free_y") +
+  scale_color_manual(values = series_cols) +
+  labs(x = "Exceedance probability", y = "Streamflow (mm/day, log)", color = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+```{r seasonal, fig.height = 6}
+both_long %>%
+  dplyr::mutate(month = as.integer(format(date, "%m"))) %>%
+  dplyr::group_by(gauge, series, month) %>%
+  dplyr::summarize(q_mm = mean(q_mm, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(month, q_mm, color = series)) +
+  geom_line() + geom_point(size = 0.8) +
+  facet_wrap(~ gauge, ncol = 2, scales = "free_y") +
+  scale_x_continuous(breaks = c(1, 4, 7, 10)) +
+  scale_color_manual(values = series_cols) +
+  labs(x = "Month", y = "Mean streamflow (mm/day)", color = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+# Notes
+
+- If GR4J matches or beats the WBM where the WBM struggles (Crystal and
+  Duckabush water budgets, Sycamore), that points to WBM structure (snow
+  on a single elevation, soil bucket, routing) rather than forcing.
+- If both models miss in the same way at a basin, forcing (e.g.
+  GridMET precipitation undercatch) is the more likely cause.
