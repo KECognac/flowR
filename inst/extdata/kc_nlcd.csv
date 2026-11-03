@@ -1,0 +1,17 @@
+nlcd_code,nlcd_class,kc_dormant,kc_growing,status,source,note
+11,Open Water,1.05,1.05,FAO56,Allen et al. 1998 (FAO-56) Table 12,open water < 2 m deep or subhumid/tropical climates; deeper lakes have a seasonal lag not represented here
+12,Perennial Ice/Snow,0.20,0.20,PLACEHOLDER,,sublimation only; seasonal snow is handled separately by snow_et_thresh
+21,"Developed, Open Space",0.60,0.90,PLACEHOLDER,,mostly lawn/turf
+22,"Developed, Low Intensity",0.45,0.70,PLACEHOLDER,,turf scaled by ~30-50% impervious
+23,"Developed, Medium Intensity",0.25,0.40,PLACEHOLDER,,turf scaled by ~50-80% impervious
+24,"Developed, High Intensity",0.10,0.15,PLACEHOLDER,,>80% impervious
+31,Barren Land,0.15,0.20,PLACEHOLDER,,bare-soil evaporation only
+41,Deciduous Forest,0.40,1.00,PLACEHOLDER,,potential (well-watered) Kc; leaf-off litter/stem evaporation; leaf-on near full canopy. Liu et al. 2017 actual Kc (0.30/0.65) tested and rejected: see config/kc_nlcd_liu2017.csv and the experiment log in scripts/03_wbm_ihacres_cv.Rmd
+42,Evergreen Forest,0.80,0.95,PLACEHOLDER,,potential Kc; canopy year-round; conifer transpiration stomatally limited. Liu et al. 2017 actual Kc (0.44/0.52) tested and rejected
+43,Mixed Forest,0.60,1.00,PLACEHOLDER,,potential Kc; between deciduous and evergreen. Liu et al. 2017 actual Kc (0.33/0.61) tested and rejected
+52,Shrub/Scrub,0.35,0.60,PLACEHOLDER,,potential Kc; sparse canopy (bucket handles moisture limit). Liu et al. 2017 actual Kc (0.14/0.42) tested and rejected
+71,Grassland/Herbaceous,0.30,0.85,PLACEHOLDER,,potential Kc; senesces in dormant season. Liu et al. 2017 actual Kc (0.41/0.86) tested and rejected
+81,Pasture/Hay,0.40,0.95,PLACEHOLDER,,FAO-56 grazing pasture ~0.75-1.0 mid-season
+82,Cultivated Crops,0.30,1.10,PLACEHOLDER,,generic row crop
+90,Woody Wetlands,0.90,1.15,PENDING,Pereira et al. 2024 Irrig. Sci. 42:1171 (to be added),placeholder until Pereira et al. 2024 wetland tables are entered
+95,Emergent Herbaceous Wetlands,0.90,1.15,PENDING,Pereira et al. 2024 Irrig. Sci. 42:1171 (to be added),placeholder until Pereira et al. 2024 wetland tables are entered

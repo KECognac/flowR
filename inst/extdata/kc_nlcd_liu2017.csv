@@ -1,0 +1,17 @@
+nlcd_code,nlcd_class,kc_dormant,kc_growing,status,source,note
+11,Open Water,1.05,1.05,FAO56,Allen et al. 1998 (FAO-56) Table 12,open water < 2 m deep or subhumid/tropical climates; deeper lakes have a seasonal lag not represented here
+12,Perennial Ice/Snow,0.20,0.20,PLACEHOLDER,,sublimation only; seasonal snow is handled separately by snow_et_thresh
+21,"Developed, Open Space",0.60,0.90,PLACEHOLDER,,mostly lawn/turf
+22,"Developed, Low Intensity",0.45,0.70,PLACEHOLDER,,turf scaled by ~30-50% impervious
+23,"Developed, Medium Intensity",0.25,0.40,PLACEHOLDER,,turf scaled by ~50-80% impervious
+24,"Developed, High Intensity",0.10,0.15,PLACEHOLDER,,>80% impervious
+31,Barren Land,0.15,0.20,PLACEHOLDER,,bare-soil evaporation only
+41,Deciduous Forest,0.30,0.65,LIU2017,Liu et al. 2017 HESS 21:311 Table 1 (DBF),dormant = winter (Nov-Jan) mean; growing = max seasonal mean (summer May-Jul); actual Kc incl. water stress
+42,Evergreen Forest,0.44,0.52,LIU2017,Liu et al. 2017 HESS 21:311 Table 1 (ENF),dormant = winter (Nov-Jan) mean; growing = max seasonal mean (fall Aug-Oct); actual Kc incl. water stress
+43,Mixed Forest,0.33,0.61,LIU2017,Liu et al. 2017 HESS 21:311 Table 1 (MF),dormant = winter (Nov-Jan) mean; growing = max seasonal mean (summer May-Jul); actual Kc incl. water stress
+52,Shrub/Scrub,0.14,0.42,LIU2017,Liu et al. 2017 HESS 21:311 Table 1 (OS),dormant = winter mean (Table 1 gives 0.14; the text gives 0.22); growing = max seasonal mean (fall Aug-Oct); only 6 sites
+71,Grassland/Herbaceous,0.41,0.86,LIU2017,Liu et al. 2017 HESS 21:311 Table 1 (GRA),dormant = winter (Nov-Jan) mean; growing = max seasonal mean (summer May-Jul); actual Kc incl. water stress
+81,Pasture/Hay,0.41,0.86,LIU2017,Liu et al. 2017 HESS 21:311 Table 1 (GRA),proxy: Liu et al. have no pasture class; grassland values used
+82,Cultivated Crops,0.26,0.57,LIU2017,Liu et al. 2017 HESS 21:311 Table 1 (CRO),dormant = winter (Nov-Jan) mean; growing = max seasonal mean (summer May-Jul); generic cropland
+90,Woody Wetlands,0.90,1.15,PENDING,Pereira et al. 2024 Irrig. Sci. 42:1171 (to be added),placeholder until Pereira et al. 2024 wetland tables are entered
+95,Emergent Herbaceous Wetlands,0.90,1.15,PENDING,Pereira et al. 2024 Irrig. Sci. 42:1171 (to be added),placeholder until Pereira et al. 2024 wetland tables are entered
